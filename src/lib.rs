@@ -21,6 +21,8 @@ extern crate std;
 pub struct Tlv493d<I2c, E> {
     i2c: I2c,
     addr: u8,
+    initial: [u8; 10],
+    last_frm: u8,
     _e: PhantomData<E>,
 }
 
@@ -60,10 +62,20 @@ pub struct Values {
     temp: f32,  // Device temperature (C)
 }
 
+/// Device operating mode
+/// Note that in most cases the mode is a combination of mode and IRQ flags
+pub enum Mode {
+    Disabled,       // Reading disabled
+    Master,         // Master initiated mode (reading occurs after readout)
+    Fast,           // Fast mode (3.3kHz)
+    LowPower,       // Low power mode (100Hz)
+    UltraLowPower,  // Ultra low power mode (10Hz)
+}
+
 bitflags! {
     /// Device Mode1 register
     pub struct Mode1: u8 {
-        const PARITY = 0b1000_0000;     // Parity of configuration map, must be calculated prior to write command
+        const PARITY     = 0b1000_0000;     // Parity of configuration map, must be calculated prior to write command
         const I2C_ADDR_1 = 0b0100_0000;     // Set I2C address top bit in bus configuration
         const I2C_ADDR_0 = 0b0010_0000;     // Set I2C address bottom bit in bus configuration
         const IRQ_EN     = 0b0000_0100;      // Enable read-complete interrupts
@@ -90,8 +102,12 @@ pub enum Error<E: core::fmt::Debug> {
     #[cfg_attr(feature = "std", error("No device found with specified i2c bus and address"))] 
     NoDevice,
 
+    // Device ADC locked up and must be reset
+    #[cfg_attr(feature = "std", error("Device ADC lockup, reset required"))] 
+    AdcLockup,
+
     // Underlying I2C device error
-    #[cfg_attr(feature = "std", error("Underlying I2C device error"))] 
+    #[cfg_attr(feature = "std", error("I2C device error: {0:?}"))] 
     I2c(E),
 }
 
@@ -101,20 +117,79 @@ where
     E: core::fmt::Debug,
 {
     /// Create a new TLV493D instance
-    pub fn new(i2c: I2c, addr: u8) -> Result<Self, Error<E>> {
-        debug!("New Tlv493d with address: {}", addr);
+    pub fn new(i2c: I2c, addr: u8, mode: Mode) -> Result<Self, Error<E>> {
+        debug!("New Tlv493d with address: 0x{:02x}", addr);
         
         // Construct object
         let mut s = Self {
-            i2c, addr, _e: PhantomData,
+            i2c, addr, initial: [0u8; 10], last_frm: 0xff, _e: PhantomData,
         };
+
+        // Startup per fig. 5.1 in TLV493D-A1B6 user manual
+
+        // Write recovery value
+        s.i2c.write(s.addr, &[0xFF]).map_err(Error::I2c)?;
+
+        // Send reset command
+        // TODO: this does not appear to work?
+        s.i2c.write(s.addr, &[0x00]).map_err(Error::I2c)?;
        
-        // Test read from device
-        let mut b = [0u8; 1];
-        let _ = s.i2c.read(s.addr, &mut b[..]).map_err(Error::I2c)?;
+        // Read initial bitmap from device
+        let _ = s.i2c.read(s.addr, &mut s.initial[..]).map_err(Error::I2c)?;
+
+        debug!("initial read: {:02x?}", s.initial);
+
+        // Set mode
+        s.configure(mode)?;
 
         // Return object
         Ok(s)
+    }
+
+    pub fn configure(&mut self, mode: Mode) -> Result<(), Error<E>> {
+
+        let mut m1 = unsafe { Mode1::from_bits_unchecked(self.initial[7]) };
+        let m2 = unsafe { Mode2::from_bits_unchecked(self.initial[9]) };
+
+        debug!("Factory config: {:?} ({:02x?})", m1, self.initial);
+
+        // Clear mode flags
+        m1.remove(Mode1::PARITY);
+        m1.remove(Mode1::FAST | Mode1::LOW);
+
+        match mode {
+            Mode::Disabled => (),
+            Mode::Master            => m1 |= Mode1::FAST | Mode1::LOW,
+            Mode::Fast              => m1 |= Mode1::FAST | Mode1::IRQ_EN,
+            Mode::LowPower          => m1 |= Mode1::LOW | Mode1::IRQ_EN,
+            Mode::UltraLowPower     => m1 |= Mode1::IRQ_EN,
+        }
+
+        let mut cfg = [
+            0x00,
+            m1.bits(),
+            self.initial[8],
+            m2.bits(),
+        ];
+
+        let mut parity = 0;
+        for v in &cfg {
+            for i in 0..8 {
+                if v & (1 << i) != 0 {
+                    parity += 1;
+                }
+            }
+        }
+        if parity % 2 == 0 {
+            m1 |= Mode1::PARITY;
+            cfg[1] = m1.bits();
+        }
+
+        debug!("Writing config: Mode1: {:?} Mode2: {:?} (cfg: {:02x?}", m1, m2, cfg);
+
+        self.i2c.write(self.addr, &cfg).map_err(Error::I2c)?;
+
+        Ok(())
     }
 
     /// Read raw values from the sensor
@@ -123,15 +198,24 @@ where
 
         // Read data from device
         let mut b = [0u8; 7];
-        self.i2c.write_read(self.addr, &[0x00], &mut b[..]).map_err(Error::I2c)?;
+        self.i2c.read(self.addr, &mut b[..]).map_err(Error::I2c)?;
+
+        // Detect ADC lockup (stalled FRM field)
+        let frm = b[3] & 0b0000_1100;
+        if self.last_frm == frm {
+            return Err(Error::AdcLockup)
+        } else {
+            self.last_frm = frm;
+        }
         
         // Convert to values
-        v[0] = (b[0] as i16) << 8 | ((b[4] & 0xF0) >> 4) as i16;
-        v[1] = (b[1] as i16) << 8 | ((b[4] & 0x0F)) as i16;
-        v[2] = (b[2] as i16) << 8 | ((b[5] & 0x0F)) as i16;
-        v[3] = ((b[3] & 0x00F0) as i16) << 8 | (b[6] as i16 & 0xFF);
+        // Double-cast here required for sign-extension
+        v[0] = (b[0] as i8 as i16) << 4 | ((b[4] & 0xF0) >> 4) as i16;
+        v[1] = (b[1] as i8 as i16) << 4 | (b[4] & 0x0F) as i16;
+        v[2] = (b[2] as i8 as i16) << 4 | (b[5] & 0x0F) as i16;
+        v[3] = (b[3] as i8 as i16 & 0xF0) << 4 | (b[6] as i16 & 0xFF);
 
-        debug!("Read data {:02x?} values: {:?}", b, v);
+        debug!("Read data {:02x?} values: {:04x?}", b, v);
 
         Ok(v)
     }
@@ -144,7 +228,7 @@ where
             x: raw[0] as f32 * 0.098f32,
             y: raw[1] as f32 * 0.098f32,
             z: raw[2] as f32 * 0.098f32,
-            temp: raw[3] as f32 * 1.1f32,
+            temp: (raw[3] - 340) as f32 * 1.1f32 + 24.2f32,
         })
     }
 }
