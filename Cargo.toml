@@ -5,7 +5,7 @@ repository = "https://github.com/ryankurte/rust-sensor-tlv493d"
 keywords = [ "embedded", "no_std", "sensor", "i2c", "tlv493d" ]
 authors = ["ryan <ryan@kurte.nz>"]
 license = "MPL-2.0"
-version = "0.1.0"
+version = "0.1.1-alpha.0"
 edition = "2018"
 
 
