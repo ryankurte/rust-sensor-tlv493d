@@ -1,0 +1,120 @@
+name: Rust
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
+
+      - name: Configure caching
+        uses: actions/cache@v2
+        if: ${{ matrix.os != 'macos-latest' }}
+        with:
+          key: check
+          path: |
+            ${{ env.HOME }}/.cargo
+            ./target
+
+      - name: Run cargo fmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check
+
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;files,C:\vcpkg\archives,readwrite'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            output: tlv493d-util
+          - target: armv7-unknown-linux-gnueabihf 
+            os: ubuntu-latest
+            output: tlv493d-util
+            cross: true
+          - target: aarch64-unknown-linux-gnu 
+            os: ubuntu-latest
+            output: tlv493d-util
+            cross: true
+
+    steps:
+    - uses: actions/checkout@v2
+    - uses: FranzDiebold/github-env-vars-action@v1.2.1
+      
+    - name: Configure toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        target:  ${{ matrix.target }}
+        override: true
+    
+    - name: Configure linux caching
+      uses: actions/cache@v2
+      with:
+        key: ${{ matrix.os }}-${{ matrix.target }}
+        path: |
+          ./target
+          /usr/share/rust/.cargo/.cargo/bin
+          /usr/share/rust/.cargo/.cargo/registry/index
+          /usr/share/rust/.cargo/.cargo/registry/cache
+          /usr/share/rust/.cargo/.cargo/git/db
+
+    - name: Install cross toolchains
+      if: ${{ matrix.cross }}
+      run: sudo apt install gcc-arm-linux-gnueabihf gcc-aarch64-linux-gnu
+
+    - name: Enable cross compilation
+      if: ${{ matrix.cross }}
+      run: |
+        echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+
+    - name: Build release
+      uses: actions-rs/cargo@v1
+      with:
+        command: build
+        args: --target ${{ matrix.target }} --release
+
+    - name: Copy / Rename utility
+      run: |
+        cp target/${{ matrix.target }}/release/${{ matrix.output }} ${{ matrix.output }}
+        tar -czvf tlv493d-util-${{ matrix.target }}.tgz ${{ matrix.output }}
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v1
+      with:
+        name: tlv493d-util-${{ matrix.target }}.tgz
+        path: tlv493d-util-${{ matrix.target }}.tgz
+
+    - name: Upload binary to release
+      if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: tlv493d-util-${{ matrix.target }}.tgz
+        asset_name: tlv493d-util-${{ matrix.target }}.tgz
+        tag: ${{ github.ref }}
+        overwrite: true
