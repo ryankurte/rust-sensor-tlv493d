@@ -18,7 +18,7 @@ extern crate std;
 
 pub struct Tlv493d<I2c, I2cErr, Delay, DelayErr> {
     i2c: I2c,
-    _delay: Delay,
+    delay: Delay,
     addr: u8,
     initial: [u8; 10],
     last_frm: u8,
@@ -56,10 +56,10 @@ pub enum WriteRegisters {
 /// TLV493D Measurement values
 #[derive(Debug, PartialEq, Clone)]
 pub struct Values {
-    x: f32,    // X axis magnetic flux (mT)
-    y: f32,    // Y axis magnetic flux (mT)
-    z: f32,    // Z axis magnetic flux (mT)
-    temp: f32, // Device temperature (C)
+    pub x: f32,    // X axis magnetic flux (mT)
+    pub y: f32,    // Y axis magnetic flux (mT)
+    pub z: f32,    // Z axis magnetic flux (mT)
+    pub temp: f32, // Device temperature (C)
 }
 
 /// Device operating mode
@@ -136,7 +136,7 @@ where
         // Construct object
         let mut s = Self {
             i2c,
-            _delay: delay,
+            delay,
             addr,
             initial: [0u8; 10],
             last_frm: 0xff,
@@ -163,7 +163,7 @@ where
             self.i2c.try_write(self.addr, &[0xFF]).map_err(Error::I2c)?;
 
             // Wait for startup delay
-            self._delay.try_delay_ms(40).map_err(Error::Delay)?;
+            self.delay.try_delay_ms(40).map_err(Error::Delay)?;
 
             debug!("Setting device address");
 
@@ -276,5 +276,10 @@ where
 
         // https://en.wikipedia.org/wiki/Atan2
         Ok(v.x.atan2(v.y))
+    }
+
+    /// Fetch a reference to the inner delay object
+    pub fn inner_delay(&mut self) -> &mut Delay {
+        &mut self.delay
     }
 }
