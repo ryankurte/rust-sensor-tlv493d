@@ -16,6 +16,7 @@ use log::debug;
 #[cfg(feature = "std")]
 extern crate std;
 
+
 pub struct Tlv493d<I2c, I2cErr, Delay, DelayErr> {
     i2c: I2c,
     delay: Delay,
@@ -46,6 +47,8 @@ pub enum ReadRegisters {
 }
 
 /// Write registers for the Tlv493d
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum WriteRegisters {
     Res = 0x00,   // Reserved
     Mode1 = 0x01, // Mode 1 register (P | IICAddr[1..0] | Reserved[1..0] | INT | FAST | LOW)
@@ -54,7 +57,8 @@ pub enum WriteRegisters {
 }
 
 /// TLV493D Measurement values
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Values {
     pub x: f32,    // X axis magnetic flux (mT)
     pub y: f32,    // Y axis magnetic flux (mT)
@@ -64,6 +68,8 @@ pub struct Values {
 
 /// Device operating mode
 /// Note that in most cases the mode is a combination of mode and IRQ flags
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Mode {
     Disabled,      // Reading disabled
     Master,        // Master initiated mode (reading occurs after readout)
@@ -74,6 +80,7 @@ pub enum Mode {
 
 bitflags! {
     /// Device Mode1 register
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct Mode1: u8 {
         const PARITY     = 0b1000_0000;     // Parity of configuration map, must be calculated prior to write command
         const I2C_ADDR_1 = 0b0100_0000;     // Set I2C address top bit in bus configuration
@@ -86,6 +93,7 @@ bitflags! {
 
 bitflags! {
     /// Device Mode2 register
+    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
     pub struct Mode2: u8 {
         const TEMP_DISABLE   = 0b1000_0000;     // DISABLE temperature measurement
         const LOW_POW_PERIOD = 0b0100_0000;     // Set low power period ("0": 100ms, "1": 12ms)
@@ -96,6 +104,7 @@ bitflags! {
 /// Tlv493d related errors
 #[derive(Debug)]
 #[cfg_attr(feature = "std", derive(thiserror::Error))]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error<I2cErr: Debug, DelayErr: Debug> {
     // No device found with specified i2c bus and address
     #[cfg_attr(
@@ -159,8 +168,17 @@ where
         if reset {
             debug!("Resetting device");
 
-            // Write recovery value
-            self.i2c.try_write(self.addr, &[0xFF]).map_err(Error::I2c)?;
+            // Recovery and reset is a bit fraught with disaster
+
+            // First send recovery (S 0xFF P)
+            // Note this will never be ACK'd so will report failure
+            // Optional, could free sensor from aborted communication
+            let _ = self.i2c.try_write(0xFF, &[]);
+
+            // Then send reset (S 0x00 ADR P)
+            // Note this is not ACK'd so will report failure
+            // Setting address seems like it requires bit-bashing
+            let _ = self.i2c.try_write(0x00, &[]);
 
             // Wait for startup delay
             self.delay.try_delay_ms(40).map_err(Error::Delay)?;
@@ -168,7 +186,7 @@ where
             debug!("Setting device address");
 
             // TODO: work out why things get upset if we set the address
-            //self.i2c.write(0x00, &[0xFF]).map_err(Error::I2c)?;
+
 
             debug!("Read device initial state");
 
