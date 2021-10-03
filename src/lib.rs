@@ -10,7 +10,8 @@ use core::fmt::Debug;
 use core::marker::PhantomData;
 
 use bitflags::bitflags;
-use embedded_hal::blocking::{delay, i2c};
+use embedded_hal::delay::blocking::DelayMs;
+use embedded_hal::i2c::{blocking as i2c};
 use log::debug;
 
 #[cfg(feature = "std")]
@@ -121,7 +122,7 @@ impl<I2c, I2cErr, Delay, DelayErr> Tlv493d<I2c, I2cErr, Delay, DelayErr>
 where
     I2c: i2c::Read<Error = I2cErr> + i2c::Write<Error = I2cErr> + i2c::WriteRead<Error = I2cErr>,
     I2cErr: Debug,
-    Delay: delay::DelayMs<u32, Error = DelayErr>,
+    Delay: DelayMs<u32, Error = DelayErr>,
     DelayErr: Debug,
 {
     /// Create a new TLV493D instance
@@ -160,10 +161,10 @@ where
             debug!("Resetting device");
 
             // Write recovery value
-            self.i2c.try_write(self.addr, &[0xFF]).map_err(Error::I2c)?;
+            self.i2c.write(self.addr, &[0xFF]).map_err(Error::I2c)?;
 
             // Wait for startup delay
-            self._delay.try_delay_ms(40).map_err(Error::Delay)?;
+            self._delay.delay_ms(40).map_err(Error::Delay)?;
 
             debug!("Setting device address");
 
@@ -175,7 +176,7 @@ where
             // Read initial bitmap from device
             let _ = self
                 .i2c
-                .try_read(self.addr, &mut self.initial[..])
+                .read(self.addr, &mut self.initial[..])
                 .map_err(Error::I2c)?;
 
             debug!("Initial state: {:02x?}", self.initial);
@@ -222,7 +223,7 @@ where
             m1, m2, cfg
         );
 
-        self.i2c.try_write(self.addr, &cfg).map_err(Error::I2c)?;
+        self.i2c.write(self.addr, &cfg).map_err(Error::I2c)?;
 
         Ok(())
     }
@@ -234,7 +235,7 @@ where
         // Read data from device
         let mut b = [0u8; 7];
         self.i2c
-            .try_read(self.addr, &mut b[..])
+            .read(self.addr, &mut b[..])
             .map_err(Error::I2c)?;
 
         // Detect ADC lockup (stalled FRM field)
