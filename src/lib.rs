@@ -6,31 +6,49 @@
 ///
 /// - https://www.infineon.com/dgdl/Infineon-TLV493D-A1B6-DataSheet-v01_10-EN.pdf?fileId=5546d462525dbac40152a6b85c760e80
 /// - https://www.infineon.com/dgdl/Infineon-TLV493D-A1B6_3DMagnetic-UM-v01_03-EN.pdf?fileId=5546d46261d5e6820161e75721903ddd
-use core::fmt::Debug;
-use core::marker::PhantomData;
 
 use bitflags::bitflags;
-use embedded_hal::delay::blocking::DelayMs;
-use embedded_hal::i2c::{blocking as i2c};
-use log::debug;
+use core::fmt::Debug;
+use core::marker::PhantomData;
+use maybe_async_cfg::maybe;
+
+#[cfg(feature = "async")]
+use embedded_hal_async::{
+    i2c,
+    delay::DelayNs,
+    i2c::Error as I2cError,
+};
+
+#[cfg(feature = "blocking")]
+use embedded_hal::{
+    delay::DelayNs,
+    i2c,
+    i2c::Error as I2cError,
+};
 
 #[cfg(feature = "std")]
 extern crate std;
 
-pub struct Tlv493d<I2c, I2cErr, Delay, DelayErr> {
+#[cfg(feature = "defmt")]
+#[allow(unused_imports)]
+#[macro_use]
+extern crate defmt;
+
+pub struct Tlv493d<I2c, I2cErr, Delay> {
     i2c: I2c,
-    _delay: Delay,
+    delay: Delay,
     addr: u8,
     initial: [u8; 10],
-    last_frm: u8,
+    last_frm: Option<u8>,
     _e_i2c: PhantomData<I2cErr>,
-    _e_delay: PhantomData<DelayErr>,
 }
 
 /// Base address for Tlv493d, bottom bit set during power up
 /// based on value of SDA.
 pub const ADDRESS_BASE: u8 = 0b1011110;
 
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// Read registers for the Tlv493d
 pub enum ReadRegisters {
     Rx = 0x00,    // X direction flux (Bx[11..4])
@@ -46,6 +64,8 @@ pub enum ReadRegisters {
     FactSet3 = 0x09,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 /// Write registers for the Tlv493d
 pub enum WriteRegisters {
     Res = 0x00,   // Reserved
@@ -56,15 +76,18 @@ pub enum WriteRegisters {
 
 /// TLV493D Measurement values
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Values {
-    x: f32,    // X axis magnetic flux (mT)
-    y: f32,    // Y axis magnetic flux (mT)
-    z: f32,    // Z axis magnetic flux (mT)
-    temp: f32, // Device temperature (C)
+    pub x: f32,    // X axis magnetic flux (mT)
+    pub y: f32,    // Y axis magnetic flux (mT)
+    pub z: f32,    // Z axis magnetic flux (mT)
+    pub temp: f32, // Device temperature (C)
 }
 
 /// Device operating mode
 /// Note that in most cases the mode is a combination of mode and IRQ flags
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Mode {
     Disabled,      // Reading disabled
     Master,        // Master initiated mode (reading occurs after readout)
@@ -96,13 +119,11 @@ bitflags! {
 
 /// Tlv493d related errors
 #[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "std", derive(thiserror::Error))]
-pub enum Error<I2cErr: Debug, DelayErr: Debug> {
+pub enum Error<I2cErr: I2cError + Debug> {
     // No device found with specified i2c bus and address
-    #[cfg_attr(
-        feature = "std",
-        error("No device found with specified i2c bus and address")
-    )]
+    #[cfg_attr(feature = "std", error("No device found with specified i2c bus and address"))]
     NoDevice,
 
     // Device ADC locked up and must be reset
@@ -112,170 +133,231 @@ pub enum Error<I2cErr: Debug, DelayErr: Debug> {
     // Underlying I2C device error
     #[cfg_attr(feature = "std", error("I2C device error: {0:?}"))]
     I2c(I2cErr),
-
-    // Underlying delay driver error
-    #[cfg_attr(feature = "std", error("Delay error: {0:?}"))]
-    Delay(DelayErr),
 }
 
-impl<I2c, I2cErr, Delay, DelayErr> Tlv493d<I2c, I2cErr, Delay, DelayErr>
-where
-    I2c: i2c::Read<Error = I2cErr> + i2c::Write<Error = I2cErr> + i2c::WriteRead<Error = I2cErr>,
-    I2cErr: Debug,
-    Delay: DelayMs<u32, Error = DelayErr>,
-    DelayErr: Debug,
-{
-    /// Create a new TLV493D instance
-    pub fn new(
-        i2c: I2c,
-        delay: Delay,
-        addr: u8,
-        mode: Mode,
-    ) -> Result<Self, Error<I2cErr, DelayErr>> {
-        debug!("New Tlv493d with address: 0x{:02x}", addr);
+maybe_async_cfg::content!{
+    impl<I2c, I2cErr, Delay> Tlv493d<I2c, I2cErr, Delay>
+    where
+        I2c: i2c::I2c,
+        I2cErr: I2cError + Debug,
+        Error<I2cErr>: From<Error<<I2c as i2c::ErrorType>::Error>>,
+        Delay: DelayNs,
+    {
+        /// Create a new TLV493D instance
+        #[maybe(
+            sync(feature = "blocking"),
+            async(feature = "async")
+        )]
+        pub async fn new(
+            i2c: I2c,
+            delay: Delay,
+            addr: u8,
+            mode: Mode,
+        ) -> Result<Self, (Error<I2cErr>, I2c)> {
+            #[cfg(feature = "defmt")]
+            debug!("New Tlv493d with address: 0x{:02x}", addr);
 
-        // Construct object
-        let mut s = Self {
-            i2c,
-            _delay: delay,
-            addr,
-            initial: [0u8; 10],
-            last_frm: 0xff,
-            _e_i2c: PhantomData,
-            _e_delay: PhantomData,
-        };
+            // Construct object
+            let mut s = Self {
+                i2c,
+                delay,
+                addr,
+                initial: [0u8; 10],
+                last_frm: None,
+                _e_i2c: PhantomData,
+            };
 
-        // Reset and configure
-        s.configure(mode, true)?;
+            // Reset and configure
+            #[cfg(feature = "async")]
+            if let Err(err) = s.configure_async(mode, true).await {
+                return Err((err, s.i2c));
+            };
+            #[cfg(feature = "blocking")]
+            if let Err(err) = s.configure_sync(mode, true) {
+                return Err((err, s.i2c));
+            };
 
-        // Return object
-        Ok(s)
-    }
-
-    /// Configure the device into the specified mode
-    pub fn configure(&mut self, mode: Mode, reset: bool) -> Result<(), Error<I2cErr, DelayErr>> {
-        // Startup per fig. 5.1 in TLV493D-A1B6 user manual
-
-        // Reset if enabled
-        if reset {
-            debug!("Resetting device");
-
-            // Write recovery value
-            self.i2c.write(self.addr, &[0xFF]).map_err(Error::I2c)?;
-
-            // Wait for startup delay
-            self._delay.delay_ms(40).map_err(Error::Delay)?;
-
-            debug!("Setting device address");
-
-            // TODO: work out why things get upset if we set the address
-            //self.i2c.write(0x00, &[0xFF]).map_err(Error::I2c)?;
-
-            debug!("Read device initial state");
-
-            // Read initial bitmap from device
-            let _ = self
-                .i2c
-                .read(self.addr, &mut self.initial[..])
-                .map_err(Error::I2c)?;
-
-            debug!("Initial state: {:02x?}", self.initial);
+            // Return object
+            Ok(s)
         }
 
-        // Parse out initial mode settings
-        let mut m1 = unsafe { Mode1::from_bits_unchecked(self.initial[7]) };
-        let m2 = unsafe { Mode2::from_bits_unchecked(self.initial[9]) };
-
-        debug!("Current config: {:?} ({:02x?})", m1, self.initial);
-
-        // Clear mode flags
-        m1.remove(Mode1::PARITY);
-        m1.remove(Mode1::FAST | Mode1::LOW);
-
-        match mode {
-            Mode::Disabled => (),
-            Mode::Master => m1 |= Mode1::FAST | Mode1::LOW,
-            Mode::Fast => m1 |= Mode1::FAST | Mode1::IRQ_EN,
-            Mode::LowPower => m1 |= Mode1::LOW | Mode1::IRQ_EN,
-            Mode::UltraLowPower => m1 |= Mode1::IRQ_EN,
+        pub fn into_i2c(self) -> I2c {
+            self.i2c
         }
 
-        let mut cfg = [0x00, m1.bits(), self.initial[8], m2.bits()];
+        /// Configure the device into the specified mode
+        #[maybe(
+            sync(feature = "blocking"),
+            async(feature = "async")
+        )]
+        pub async fn configure(&mut self, mode: Mode, reset: bool) -> Result<(), Error<I2cErr>> {
+            // Startup per fig. 5.1 in TLV493D-A1B6 user manual
 
-        self.initial[7] = m1.bits();
-        self.initial[9] = m2.bits();
+            // Reset if enabled
+            if reset {
+                #[cfg(feature = "defmt")]
+                debug!("Resetting device");
 
-        let mut parity = 0;
-        for v in &cfg {
-            for i in 0..8 {
-                if v & (1 << i) != 0 {
-                    parity += 1;
+                // Wait for startup delay
+                #[cfg(feature = "async")]
+                self.delay.delay_ms(1).await;
+                #[cfg(feature = "blocking")]
+                self.delay.delay_ms(1);
+
+                // Write recovery value
+                #[cfg(feature = "async")]
+                self.i2c.write(0xff, &[]).await
+                    .map_err(Error::I2c).ok();
+                #[cfg(feature = "blocking")]
+                self.i2c.write(0xff, &[])
+                    .map_err(Error::I2c).ok();
+
+                #[cfg(feature = "defmt")]
+                debug!("Setting device address");
+
+                // Write reset
+                #[cfg(feature = "async")]
+                self.i2c.write(0x00, &[0xff]).await
+                    .map_err(Error::I2c).ok();
+                #[cfg(feature = "blocking")]
+                self.i2c.write(0x00, &[0xff])
+                    .map_err(Error::I2c).ok();
+
+                #[cfg(feature = "defmt")]
+                debug!("Read device initial state");
+
+                // Read initial bitmap from device
+                #[cfg(feature = "async")]
+                self.i2c.read(self.addr, &mut self.initial[..]).await
+                    .map_err(Error::I2c)?;
+                #[cfg(feature = "blocking")]
+                self.i2c.read(self.addr, &mut self.initial[..])
+                    .map_err(Error::I2c)?;
+
+                #[cfg(feature = "defmt")]
+                debug!("Initial state: {:02x}", self.initial);
+            }
+
+            // Parse out initial mode settings
+            let Some(mut mod1) = Mode1::from_bits(self.initial[7]) else {
+                panic!("implementation error");
+            };
+            let Some(mod2) = Mode2::from_bits(self.initial[9]) else {
+                panic!("implementation error");
+            };
+
+            // Clear mode flags
+            mod1.remove(Mode1::PARITY);
+            mod1.remove(Mode1::FAST | Mode1::LOW);
+
+            match mode {
+                Mode::Disabled => (),
+                Mode::Master => mod1 |= Mode1::FAST | Mode1::LOW,
+                Mode::Fast => mod1 |= Mode1::FAST | Mode1::IRQ_EN,
+                Mode::LowPower => mod1 |= Mode1::LOW | Mode1::IRQ_EN,
+                Mode::UltraLowPower => mod1 |= Mode1::IRQ_EN,
+            }
+
+            let mut cfg = [0x00, mod1.bits(), self.initial[8], mod2.bits()];
+
+            self.initial[7] = mod1.bits();
+            self.initial[9] = mod2.bits();
+
+            let mut parity = 0;
+            for v in &cfg {
+                for i in 0..8 {
+                    if v & (1 << i) != 0 {
+                        parity += 1;
+                    }
                 }
             }
-        }
-        if parity % 2 == 0 {
-            m1 |= Mode1::PARITY;
-            cfg[1] = m1.bits();
-        }
+            if parity % 2 == 0 {
+                mod1 |= Mode1::PARITY;
+                cfg[1] = mod1.bits();
+            }
 
-        debug!(
-            "Writing config: Mode1: {:?} Mode2: {:?} (cfg: {:02x?}",
-            m1, m2, cfg
-        );
+            #[cfg(feature = "async")]
+            self.i2c.write(self.addr, &cfg).await
+                .map_err(Error::I2c)?;
+            #[cfg(feature = "blocking")]
+            self.i2c.write(self.addr, &cfg)
+                .map_err(Error::I2c)?;
 
-        self.i2c.write(self.addr, &cfg).map_err(Error::I2c)?;
-
-        Ok(())
-    }
-
-    /// Read raw values from the sensor
-    pub fn read_raw(&mut self) -> Result<[i16; 4], Error<I2cErr, DelayErr>> {
-        let mut v = [0i16; 4];
-
-        // Read data from device
-        let mut b = [0u8; 7];
-        self.i2c
-            .read(self.addr, &mut b[..])
-            .map_err(Error::I2c)?;
-
-        // Detect ADC lockup (stalled FRM field)
-        let frm = b[3] & 0b0000_1100;
-        if self.last_frm == frm {
-            return Err(Error::AdcLockup);
-        } else {
-            self.last_frm = frm;
+            Ok(())
         }
 
-        // Convert to values
-        // Double-cast here required for sign-extension
-        v[0] = (b[0] as i8 as i16) << 4 | ((b[4] & 0xF0) >> 4) as i16;
-        v[1] = (b[1] as i8 as i16) << 4 | (b[4] & 0x0F) as i16;
-        v[2] = (b[2] as i8 as i16) << 4 | (b[5] & 0x0F) as i16;
-        v[3] = (b[3] as i8 as i16 & 0xF0) << 4 | (b[6] as i16 & 0xFF);
+        /// Read raw values from the sensor
+        #[maybe(
+            sync(feature = "blocking"),
+            async(feature = "async")
+        )]
+        pub async fn read_raw(&mut self) -> Result<[i16; 4], Error<I2cErr>> {
+            let mut v = [0i16; 4];
 
-        debug!("Read data {:02x?} values: {:04x?}", b, v);
+            // Read data from device
+            let mut b = [0u8; 7];
+            #[cfg(feature = "async")]
+            self.i2c.read(self.addr, &mut b[..]).await
+                .map_err(Error::I2c)?;
+            #[cfg(feature = "blocking")]
+            self.i2c.read(self.addr, &mut b[..])
+                .map_err(Error::I2c)?;
 
-        Ok(v)
-    }
+            // Detect ADC lockup (stalled FRM field)
+            let frm = b[3] & 0b0000_1100;
+            if let Some(last_frm) = self.last_frm
+            && last_frm == frm
+            {
+                return Err(Error::AdcLockup);
+            }
+            self.last_frm = Some(frm);
 
-    /// Read and convert values from the sensor
-    pub fn read(&mut self) -> Result<Values, Error<I2cErr, DelayErr>> {
-        let raw = self.read_raw()?;
+            // Convert to values
+            // Double-cast here required for sign-extension
+            v[0] = (b[0] as i8 as i16) << 4 | ((b[4] & 0xf0) >> 4) as i16;
+            v[1] = (b[1] as i8 as i16) << 4 | (b[4] & 0x0f) as i16;
+            v[2] = (b[2] as i8 as i16) << 4 | (b[5] & 0x0f) as i16;
+            v[3] = (b[3] as i8 as i16 & 0xf0) << 4 | (b[6] as i16 & 0xff);
 
-        Ok(Values {
-            x: raw[0] as f32 * 0.098f32,
-            y: raw[1] as f32 * 0.098f32,
-            z: raw[2] as f32 * 0.098f32,
-            temp: (raw[3] - 340) as f32 * 1.1f32 + 24.2f32,
-        })
-    }
+            #[cfg(feature = "defmt")]
+            debug!("Read data {:02x} values: {:04x}", b, v);
 
-    #[cfg(feature = "math")]
-    pub fn read_angle_f32(&mut self) -> Result<f32, Error<I2cErr, DelayErr>> {
-        // Read values
-        let v = self.read()?;
+            Ok(v)
+        }
 
-        // https://en.wikipedia.org/wiki/Atan2
-        Ok(v.x.atan2(v.y))
+        /// Read and convert values from the sensor
+        #[maybe(
+            sync(feature = "blocking"),
+            async(feature = "async")
+        )]
+        pub async fn read(&mut self) -> Result<Values, Error<I2cErr>> {
+            #[cfg(feature = "async")]
+            let raw = self.read_raw_async().await?;
+            #[cfg(feature = "blocking")]
+            let raw = self.read_raw_sync()?;
+
+            Ok(Values {
+                x: raw[0] as f32 * 0.098f32,
+                y: raw[1] as f32 * 0.098f32,
+                z: raw[2] as f32 * 0.098f32,
+                temp: (raw[3] - 340) as f32 * 1.1f32 + 24.2f32,
+            })
+        }
+
+        #[cfg(feature = "math")]
+        #[maybe(
+            sync(feature = "blocking"),
+            async(feature = "async")
+        )]
+        pub async fn read_angle_f32(&mut self) -> Result<f32, Error<I2cErr>> {
+            // Read values
+            #[cfg(feature = "async")]
+            let v = self.read_async().await?;
+            #[cfg(feature = "blocking")]
+            let v = self.read_sync()?;
+
+            // https://en.wikipedia.org/wiki/Atan2
+            Ok(libm::Libm::<f32>::atan2(v.x, v.y))
+        }
     }
 }
