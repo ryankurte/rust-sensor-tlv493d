@@ -62,7 +62,7 @@ fn main() -> Result<(), anyhow::Error> {
     let i2c = I2cdev::new(opts.i2c_dev)?;
 
     // Create sensor
-    let mut sensor = Tlv493d::new(i2c, Delay {}, opts.i2c_addr, Mode::Master)?;
+    let mut sensor = Tlv493d::new_sync(i2c, Delay {}, opts.i2c_addr, Mode::Master)?;
 
     // Setup exit handler
     let r = running.clone();
@@ -76,10 +76,10 @@ fn main() -> Result<(), anyhow::Error> {
     // Read from sensor
     while running.load(Ordering::SeqCst) {
         if opts.angle {
-            let v = sensor.read_angle_f32()?;
+            let v = sensor.read_angle_f32_sync()?;
             println!("{:03.04?}", v);
         } else {
-            let v = sensor.read()?;
+            let v = sensor.read_sync()?;
             println!("{:03.04?}", v);
         }
 
@@ -87,7 +87,7 @@ fn main() -> Result<(), anyhow::Error> {
     }
 
     // Disable sensor before exit
-    sensor.configure(Mode::Disabled, false)?;
+    sensor.configure_sync(Mode::Disabled, false)?;
 
     Ok(())
 }
