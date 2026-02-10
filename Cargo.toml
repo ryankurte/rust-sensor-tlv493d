@@ -9,13 +9,13 @@ version = "0.1.1"
 edition = "2024"
 
 [features]
-default = ["async"]
+default = ["std", "blocking"]
 async = ["embedded-hal-async"]
 blocking = ["embedded-hal"]
 defmt = [ "dep:defmt" ]
 math = [ "dep:libm" ]
 std = [ "thiserror", "anyhow" ]
-util = [ "linux-embedded-hal", "structopt", "simplelog", "ctrlc", "math", "embedded-io" ]
+util = [ "linux-embedded-hal", "structopt", "simplelog", "ctrlc", "math", "embedded-io", "anyhow", "log" ]
 
 [dependencies]
 anyhow = { version = "1.0.33", optional = true }
@@ -31,6 +31,7 @@ maybe-async-cfg = "0.2.5"
 simplelog = { version = "0.12.2", optional = true }
 structopt = { version = "0.3.20", optional = true }
 thiserror = { version = "2.0.18", optional = true }
+log = { version = "0.4.29", optional = true }
 
 [[bin]]
 name = "tlv493d-util"

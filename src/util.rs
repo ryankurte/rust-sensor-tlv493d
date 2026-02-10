@@ -1,9 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use log::{debug, info};
-use simplelog::{LevelFilter, SimpleLogger, TermLogger, TerminalMode};
+use log::{debug, error, info};
+use simplelog::{ColorChoice, LevelFilter, SimpleLogger, TermLogger, TerminalMode};
 use structopt::StructOpt;
 
 use linux_embedded_hal::{Delay, I2cdev};
@@ -49,7 +49,12 @@ fn main() -> Result<(), anyhow::Error> {
 
     // Setup logging
     let log_config = simplelog::ConfigBuilder::new().build();
-    if let Err(_e) = TermLogger::init(opts.log_level, log_config.clone(), TerminalMode::Mixed) {
+    if let Err(_e) = TermLogger::init(
+        opts.log_level,
+        log_config.clone(),
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    ) {
         SimpleLogger::init(opts.log_level, log_config).unwrap();
     }
 
@@ -62,7 +67,13 @@ fn main() -> Result<(), anyhow::Error> {
     let i2c = I2cdev::new(opts.i2c_dev)?;
 
     // Create sensor
-    let mut sensor = Tlv493d::new_sync(i2c, Delay {}, opts.i2c_addr, Mode::Master)?;
+    let mut sensor = match Tlv493d::new_sync(i2c, Delay {}, opts.i2c_addr, Mode::Master) {
+        Ok(s) => s,
+        Err((e, _)) => {
+            error!("Failed to connect to sensor: {e}");
+            return Err(e.into());
+        }
+    };
 
     // Setup exit handler
     let r = running.clone();

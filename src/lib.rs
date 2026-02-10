@@ -6,25 +6,16 @@
 ///
 /// - https://www.infineon.com/dgdl/Infineon-TLV493D-A1B6-DataSheet-v01_10-EN.pdf?fileId=5546d462525dbac40152a6b85c760e80
 /// - https://www.infineon.com/dgdl/Infineon-TLV493D-A1B6_3DMagnetic-UM-v01_03-EN.pdf?fileId=5546d46261d5e6820161e75721903ddd
-
 use bitflags::bitflags;
 use core::fmt::Debug;
 use core::marker::PhantomData;
 use maybe_async_cfg::maybe;
 
 #[cfg(feature = "async")]
-use embedded_hal_async::{
-    i2c,
-    delay::DelayNs,
-    i2c::Error as I2cError,
-};
+use embedded_hal_async::{delay::DelayNs, i2c, i2c::Error as I2cError};
 
 #[cfg(feature = "blocking")]
-use embedded_hal::{
-    delay::DelayNs,
-    i2c,
-    i2c::Error as I2cError,
-};
+use embedded_hal::{delay::DelayNs, i2c, i2c::Error as I2cError};
 
 #[cfg(feature = "std")]
 extern crate std;
@@ -123,7 +114,10 @@ bitflags! {
 #[cfg_attr(feature = "std", derive(thiserror::Error))]
 pub enum Error<I2cErr: I2cError + Debug> {
     // No device found with specified i2c bus and address
-    #[cfg_attr(feature = "std", error("No device found with specified i2c bus and address"))]
+    #[cfg_attr(
+        feature = "std",
+        error("No device found with specified i2c bus and address")
+    )]
     NoDevice,
 
     // Device ADC locked up and must be reset
@@ -135,7 +129,7 @@ pub enum Error<I2cErr: I2cError + Debug> {
     I2c(I2cErr),
 }
 
-maybe_async_cfg::content!{
+maybe_async_cfg::content! {
     impl<I2c, I2cErr, Delay> Tlv493d<I2c, I2cErr, Delay>
     where
         I2c: i2c::I2c,

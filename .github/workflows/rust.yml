@@ -17,7 +17,7 @@ jobs:
     continue-on-error: true
     
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -25,7 +25,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Configure caching
-        uses: actions/cache@v2
+        uses: actions/cache@v4
         if: ${{ matrix.os != 'macos-latest' }}
         with:
           key: check
@@ -62,7 +62,7 @@ jobs:
             cross: true
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v6
     - uses: FranzDiebold/github-env-vars-action@v1.2.1
       
     - name: Configure toolchain
@@ -73,7 +73,7 @@ jobs:
         override: true
     
     - name: Configure linux caching
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       with:
         key: ${{ matrix.os }}-${{ matrix.target }}
         path: |
@@ -96,7 +96,7 @@ jobs:
       uses: actions-rs/cargo@v1
       with:
         command: build
-        args: --target ${{ matrix.target }} --release
+        args: --target ${{ matrix.target }} --features=util --release
 
     - name: Copy / Rename utility
       run: |
@@ -104,7 +104,7 @@ jobs:
         tar -czvf tlv493d-util-${{ matrix.target }}.tgz ${{ matrix.output }}
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v1
+      uses: actions/upload-artifact@v6
       with:
         name: tlv493d-util-${{ matrix.target }}.tgz
         path: tlv493d-util-${{ matrix.target }}.tgz
